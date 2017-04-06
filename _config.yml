@@ -75,4 +75,4 @@ deploy:
   type: git
   repo: git@github.com:liwei721/liwei721.github.io.git
   branch: master
-avatar: /images/avatar.jpg
+avatar: avatar.jpg
