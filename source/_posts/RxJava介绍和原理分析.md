@@ -5,13 +5,17 @@ tags: Rxjava, 异步
 categories: Android开源库
 ---
 ## 背景
+### 简介
+- Rxjava现在已经更新到2.x，变动还是比较大的，新增了一些概念，比如：backpressure。但是本文是参考一位大牛讲解rxjava的原理，采用的还是1.x的代码。
+- 这里我们主要来看rxjava是怎么设计的。
+
 ### github地址
 - [Rxjava](https://github.com/ReactiveX/RxJava)
 - [RxAndroid](https://github.com/ReactiveX/RxAndroid)
 
 ### Rxjava 是什么
 - 一个词：异步。Rxjava在github上面的介绍是：a library for composing asynchronous and event-based programs using observable sequences for the Java VM。大意是在jVM上面的一个异步的库，用observable实现。
-- 它最大的好处也可以总结成一个词：简洁。这里的简洁指的是代码逻辑的简洁而非代码量的简洁。（因为我们都知道用框架是有代价的）
+- 它最大的好处也可以总结成一个词：简洁。这里的简洁指的是代码逻辑的简洁而非代码量的简洁。（因为我们都知道用框架是有代价的），Rxjava的简洁可以随着代码逻辑的复杂依然保持简洁。
 
 ## API介绍和原理简析
 
@@ -25,7 +29,7 @@ categories: Android开源库
 - Rxjava的观察者模型如下图：
 ![Rxjava观察者模型](/upload/image/zlw/观察者模型.jpg)
 
-### 基本使用
+### 基本实现
 #### 创建observer
 
 ``` java
