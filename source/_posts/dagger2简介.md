@@ -278,7 +278,7 @@ public class Salad {
 - 上面提到一个app要有一个全局的Component（ApplicationComponent），它负责管理整个app用到的全局类实例，那么这些全局类实例应该是单例的。
 - 我们想到了Module，Module里面可以包含很多创建类实例的方法，且Component会首先从Moudle中查找类实例。所以想要实现全局类实例，可以这么做：
 >1. 在Module中定义创建全局类实例的方法。
->2. Applica 管理Module。
+>2. Application 管理Module。
 >3. 保证ApplicationComponent只有一个实例，（在app的Application中实例化ApplicationComponent）
 
 - Singleton的作用如下：
