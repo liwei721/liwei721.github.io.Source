@@ -2,7 +2,7 @@
 title: Android7.0新特性
 date: 2017-02-13 20:03:15
 tags: android7.0特性
-categories: Android知识
+categories: Android技术
 ---
 ## 背景
 - Android7.0已经发布有些日子了，Android7.2.3马上也要出来了，我整理了一些Android7.0的特性，对测试过程中需要注意的点进行了分析。

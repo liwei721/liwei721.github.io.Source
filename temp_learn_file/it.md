@@ -6,7 +6,12 @@
 - ....
 
 ## Android 相关
-- View的绘制流程
+- ~~各种开源库 rxjava、eventbus3、dagger2、Retrofit2、ButterKnife~~
+- 四大组件相关知识点
+- View的绘制流程及touch事件
 - handler的机制
-- Android开源框架otto，eventbus
+- Binder机制的学习
+
+## 测试技术
 - Android性能优化
+- 各种自动化框架
