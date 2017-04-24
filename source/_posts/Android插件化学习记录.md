@@ -1,5 +1,5 @@
 ---
-title: Android插件化学习记录
+title: Android插件化学习记录（一）
 date: 2017-04-18 22:42:04
 tags: Android, 插件化
 categories: Android技术
@@ -176,27 +176,63 @@ private static final Singleton<IActivityManager> gDefault = new Singleton<IActiv
 ```
 - 由于整个Framework与AMS打交道是如此频繁，framework使用了一个单例把这个AMS的代理对象保存了起来；这样只要需要与AMS进行IPC调用，获取这个单例即可。这是AMS这个系统服务与其他普通服务的不同之处。这里还有一点小麻烦：Android不同版本之间对于如何保存这个单例的代理对象是不同的；Android 2.x系统直接使用了一个简单的静态变量存储，Android 4.x以上抽象出了一个Singleton类
 
+### PM 获取过程
+- 和ActivityManager比较类似，我直接上代码：
+
+``` java
+@Override
+ public PackageManager getPackageManager() {
+     if (mPackageManager != null) {
+         return mPackageManager;
+     }
+
+     IPackageManager pm = ActivityThread.getPackageManager();
+     if (pm != null) {
+         // Doesn't matter if we make more than one instance.
+         return (mPackageManager = new ApplicationPackageManager(this, pm));
+     }
+
+     return null;
+ }
+
+ public static IPackageManager getPackageManager() {
+     if (sPackageManager != null) {
+         //Slog.v("PackageManager", "returning cur default = " + sPackageManager);
+         return sPackageManager;
+     }
+     IBinder b = ServiceManager.getService("package");
+     //Slog.v("PackageManager", "default service binder = " + b);
+     sPackageManager = IPackageManager.Stub.asInterface(b);
+     //Slog.v("PackageManager", "default service = " + sPackageManager);
+     return sPackageManager;
+ }
+
+```
+- 通过上面的代码我们可以看出，我们需要hook sPackageManager为我们的代理对象。
+
+## Activity生命周期管理
+- 在Android系统上，仅仅完成动态类加载是不够的；我们需要想办法把我们加载进来的Activity等组件交给系统管理，让AMS赋予组件生命周期。
+
+### Activity启动过程
+- Activity启动过程已经看了无数次，流程比较长，这里只是对大致的过程进行说明，下图是App进程和AMS进程的通信过程：
+![Activity_app_AMS.png](/upload/image/zlw/Activity_app_AMS.png)
+- App进程会委托AMS进程完成Activity生命周期的管理及任务栈的管理，这个通信过程AMS是Server端，APP进程通过持有AMS的client代理ActivityManagerNative完成通信过程。
+- AMS进程完成生命周期管理以及任务栈管理后，会把控制权交给App进程，让App进程完成Activity类对象的创建，以及生命周期回调；这个通信过程也是通过Binder完成的，App所在server端的Binder对象存在于ActivityThread的内部类ApplicationThread；AMS所在client通过持有IApplicationThread的代理对象完成对于App进程的通信。
+- App进程内部的ApplicationThread server端内部有自己的Binder线程池，它与App主线程的通信通过Handler完成，这个Handler存在于ActivityThread类，叫做H。
+- 最终会调用到ActivityThread类中的performLaunchActivity方法，这个方法做了两件重要的事情：
+
+>1.使用ClassLoader加载并通过反射创建Activity对象。
+>2. 如果Application还没有创建，那么创建Application对象并回调相应的生命周期方法；
+
+### 启动不在AndroidManifest.xml中声明的Activity。
+- 根据上面Activity启动过程分析，(假如我们想启动TargetActivity，但是我们在AndroidManifest中配置了替换Activity，假如是SubActivity)我们的实现方案是这样：
+>1. 我们启动Activity，还是用的new Intent（context，TargetActivity.class）.startActivity()。然后我们利用到之前hook的ActivityManager,即在Activity即将要交给AMS去处理时，替换成为SubActivity，因为TargetActivity未在AndroidManifest中配置，而AMS有权限校验，会报错，等于我们交给AMS的是一个假的中转Activity。
+>2. AMS处理之后，会交给ApplicationThread处理，最终会调用到ActivityThread中内部类H，通过H来切换到主线程，这个H就是一个Handler，接下来就会在ActivityThread中执行对应的方法，所以在这里我们hook Handler的mCallback，将SubActivity再替换成我们的TargetActivity，这样完成启动。
+>3. 对于AMS来说，它只知道SubActivity的存在，因此我们在TargetActivity页面取dumpActivity栈，得到的还是SubActivity。
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-##
+### 启动的Activity能否收到正确声明周期
+- 其实从上面的学习我们可以明确一点，App进程和AMS交互模式比较固定：几个角色：ActivityManagerNative、ApplicationThread、ActivityThread以及内部类H，调用者使用Activity的方法，会通过ActivityManagerNative执行AMS的方法，然后再通过ApplicationThread执行到ActivityThread，然后交给内部类H转发消息到ActivityThread的方法。
+- 在Activity内有一个成员变量mToken，token可以唯一标识一个Activity对象，在AMS中，它只知道在AndroidManifest.xml中声明的Activity的存在，我们可以通过dump activity栈发现，当前页面还是在AndroidManifest中声明的Activity。
+- 然而在启动Activity的时候，回调到performLaunActivity时，通过ClassLoader加载了我们真正的Activity，完成这一操作后将activity添加进mActivities中，另外在这个方法中，我们还能看到对Activity attach方法的调用，它传递了新创建的Activity一个token对象，而这个token是在ActivityClientRecord构造函数中初始化的。
+- 因此通过这种方式启动的Activity有它自己完整而独立的生命周期！
