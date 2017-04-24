@@ -63,8 +63,146 @@ private LoadedApk getPackageInfo(ApplicationInfo aInfo, CompatibilityInfo compat
 ### Hook掉ClassLoader(自己操刀)
 - 上面提到，获取LoadedApk的过程中使用了一份缓存数据，这个缓存数据是一个Map（mPackages），从包名到LoadedApk的一个映射，我们可以考虑手动把我们插件信息添加进去。这样系统查找缓存的过程中，会直接命中缓存，进而使用我们添加进去的LoadedApk的ClassLoader来加载这个特定的Activity。
 - 我们按照下面的步骤来进行：
-> 1. Hook获取ActivityThread中的mpackages。
-> 2. 通过getPackageInfoNoCheck来构造一个插件的LoadedApk对象。public final LoadedApk getPackageInfoNoCheck(ApplicationInfo ai,CompatibilityInfo compatInfo) {}， 第二个参数是兼容性问题，我们使用默认的值DEFAULT_COMPATIBILITY_INFO，接下来主要是hi获取ApplicationInfo
+> 1. 我们的主要目标是：Hook获取ActivityThread中的mpackages。那么下一步我们需要去构造一个插件的loadedApk。
+> 2. 通过getPackageInfoNoCheck来构造一个插件的LoadedApk对象。public final LoadedApk getPackageInfoNoCheck(ApplicationInfo ai,CompatibilityInfo compatInfo) {}， 第二个参数是兼容性问题，我们使用默认的值DEFAULT_COMPATIBILITY_INFO，接下来主要是hi获取ApplicationInfo。
+>3. 绕过权限限制，如果按照前两步完成配置运行会报错： Unable to instantiate application android.app.Application：Unable to get package info for com.weishu.upf.ams_pms_hook.app; is package not installed?  跟踪代码会发现其实是在读取packageInfo时，因为插件并没有安装，所以抛出了异常，因此我们还需要hook PMS，欺骗系统我们已经安装了插件。
+
+## 委托系统，让系统帮忙加载
+- 再看ActivityThread中加载Activity的代码：
+
+``` java
+java.lang.ClassLoader cl = r.packageInfo.getClassLoader();
+activity = mInstrumentation.newActivity(
+        cl, component.getClassName(), r.intent);
+StrictMode.incrementExpectedActivityCount(activity.getClass());
+r.intent.setExtrasClassLoader(cl);
+
+```
+- 上面提到r.packageInfo中的r是通过getPackageInfoNoCheck获取的，如果在mPackages中没有loadedApk，那么系统会new 一个loadedApk。
+- 接下来会使用这个new出来的loadedApk的getClassLoader方法获取到的ClassLoader来加载类，这里的ClassLoader就是宿主的ClassLoader，因此还无法加载插件的类，我们可以通过告诉宿主程序的ClassLoader插件使用的类，让宿主ClassLoader完成对子类的加载。
+- 我们来看下LoadedApk.getClassLoader是个什么东西：
+``` java
+public ClassLoader getClassLoader() {
+    synchronized (this) {
+        if (mClassLoader != null) {
+            return mClassLoader;
+        }
+
+        if (mIncludeCode && !mPackageName.equals("android")) {
+            // 略...
+            mClassLoader = ApplicationLoaders.getDefault().getClassLoader(zip, lib,
+                    mBaseClassLoader);
+
+            StrictMode.setThreadPolicy(oldPolicy);
+        } else {
+            if (mBaseClassLoader == null) {
+                mClassLoader = ClassLoader.getSystemClassLoader();
+            } else {
+                mClassLoader = mBaseClassLoader;
+            }
+        }
+        return mClassLoader;
+    }
+}
+```
+- 可以看到，非android开头的包和android开头的包分别使用了两种不同的ClassLoader，我们只关心第一种；因此继续跟踪ApplicationLoaders类：
+
+``` java
+public ClassLoader getClassLoader(String zip, String libPath, ClassLoader parent)
+{
+
+    ClassLoader baseParent = ClassLoader.getSystemClassLoader().getParent();
+
+    synchronized (mLoaders) {
+        if (parent == null) {
+            parent = baseParent;
+        }
+
+        if (parent == baseParent) {
+            ClassLoader loader = mLoaders.get(zip);
+            if (loader != null) {
+                return loader;
+            }
+
+            Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, zip);
+            PathClassLoader pathClassloader =
+                new PathClassLoader(zip, libPath, parent);
+            Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+
+            mLoaders.put(zip, pathClassloader);
+            return pathClassloader;
+        }
+
+        Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, zip);
+        PathClassLoader pathClassloader = new PathClassLoader(zip, parent);
+        Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+        return pathClassloader;
+    }
+}
+```
+- 应用程序使用的ClassLoader都是PathClassLoader类的实例
+
+``` java
+public class PathClassLoader extends BaseDexClassLoader {
+    public PathClassLoader(String dexPath, ClassLoader parent) {
+        super((String)null, (File)null, (String)null, (ClassLoader)null);
+        throw new RuntimeException("Stub!");
+    }
+
+    public PathClassLoader(String dexPath, String libraryPath, ClassLoader parent) {
+        super((String)null, (File)null, (String)null, (ClassLoader)null);
+        throw new RuntimeException("Stub!");
+    }
+}
+```
+- 它的实现比较简单，我们再看BaseDexClassLoader
+
+``` java
+protected Class<?> findClass(String name) throws ClassNotFoundException {
+    List<Throwable> suppressedExceptions = new ArrayList<Throwable>();
+    // 通过pathList的findClass来查找对应的class。pathList其实是一个DexPathList对象。
+    Class c = pathList.findClass(name, suppressedExceptions);
+    if (c == null) {
+        ClassNotFoundException cnfe = new ClassNotFoundException("Didn't find class \"" + name + "\" on path: " + pathList);
+        for (Throwable t : suppressedExceptions) {
+            cnfe.addSuppressed(t);
+        }
+        throw cnfe;
+    }
+    return c;
+}
+```
+
+``` java
+public Class findClass(String name, List<Throwable> suppressed) {
+  // dexElements是一个Element的数组，ClassLoader在查找类的时候，会遍历这个数组。
+   for (Element element : dexElements) {
+       DexFile dex = element.dexFile;
+
+       if (dex != null) {
+           Class clazz = dex.loadClassBinaryName(name, definingContext, suppressed);
+           if (clazz != null) {
+               return clazz;
+           }
+       }
+   }
+   if (dexElementsSuppressedExceptions != null) {
+       suppressed.addAll(Arrays.asList(dexElementsSuppressedExceptions));
+   }
+   return null;
+}
+```
+
+
+
+
+
+
+
+
+
+
+
 
 
 
