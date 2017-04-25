@@ -192,7 +192,7 @@ public Class findClass(String name, List<Throwable> suppressed) {
    return null;
 }
 ```
-
+- 总的来说，宿主程序的ClassLoader最终继承自BaseDexClassLoader，BaseDexClassLoader通过DexPathList进行类的查找过程，而这个查找通过遍历一个dexElements的数组完成，我们通过把插件dex添加进这个数组让宿主ClassLoader获取了加载插件类的能力。
 
 
 
