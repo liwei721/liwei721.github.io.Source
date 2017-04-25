@@ -194,6 +194,168 @@ public Class findClass(String name, List<Throwable> suppressed) {
 ```
 - 总的来说，宿主程序的ClassLoader最终继承自BaseDexClassLoader，BaseDexClassLoader通过DexPathList进行类的查找过程，而这个查找通过遍历一个dexElements的数组完成，我们通过把插件dex添加进这个数组让宿主ClassLoader获取了加载插件类的能力。
 
+## 广播的管理
+### 注册广播
+- 我们先来分析动态注册广播的方法，使用时会调用Context.registerReceiver,跟踪代码，最终会调用到registerReceiverInternal中：
+
+``` java
+private Intent registerReceiverInternal(BroadcastReceiver receiver, int userId,
+            IntentFilter filter, String broadcastPermission,
+            Handler scheduler, Context context) {
+        IIntentReceiver rd = null;
+        if (receiver != null) {
+            if (mPackageInfo != null && context != null) {
+                if (scheduler == null) {
+                    scheduler = mMainThread.getHandler();
+                }
+                rd = mPackageInfo.getReceiverDispatcher(
+                    receiver, context, scheduler,
+                    mMainThread.getInstrumentation(), true);
+            } else {
+                if (scheduler == null) {
+                    scheduler = mMainThread.getHandler();
+                }
+                rd = new LoadedApk.ReceiverDispatcher(
+                        receiver, context, scheduler, null, true).getIIntentReceiver();
+            }
+        }
+        try {
+            return ActivityManagerNative.getDefault().registerReceiver(
+                    mMainThread.getApplicationThread(), mBasePackageName,
+                    rd, filter, broadcastPermission, userId);
+        } catch (RemoteException e) {
+            return null;
+        }
+    }
+```
+- 从代码可以知道，BroadcastReceiver的注册也是通过AMS完成的。
+- IIntentReceiver是一个Binder对象，因此是可以跨进程通信的，AMS和BroadcastReceiver的通信是靠IIntentReceiver完成的，这是因为广播的分发是在AMS中进行的，而AMS所在的进程和BroadCastReceiver所在的进程不一样，因此要把广播分发到BroadcastReceiver具体的进程需要跨进程通信。IIntentReceiver的实现类是LoadedApk.ReceiverDispatcher。
+- AMS registerReceiver方法主要做了两件事情：
+>1. 对发送者的身份和权限做一定的校验。
+>2. 把这个BroadcastReceiver以BroadcastFilter的形式存储在AMS的mReceiverResolver变量中，供后续使用。
+
+- 静态注册广播的信息，我们从前面介绍构建applicationInfo时知道，PackageParser类会对AndroidManifest.xml文件解析，因为APK的解析过程是在PMS中进行的，因此静态注册广播的信息存储在PMS中。
+
+### 发送过程
+- 发送广播很简单，context.sendBroadcast(), 跟踪代码到ContextImpl中：
+
+``` java
+public void sendBroadcast(Intent intent) {
+    warnIfCallingFromSystemProcess();
+    String resolvedType = intent.resolveTypeIfNeeded(getContentResolver());
+    try {
+        intent.prepareToLeaveProcess();
+        ActivityManagerNative.getDefault().broadcastIntent(
+                mMainThread.getApplicationThread(), intent, resolvedType, null,
+                Activity.RESULT_OK, null, null, null, AppOpsManager.OP_NONE, null, false, false,
+                getUserId());
+    } catch (RemoteException e) {
+        throw new RuntimeException("Failure from system", e);
+    }
+}
+```
+- 我们跟踪进AMS的broadcastIntent()方法，它仅仅是调用了broadcastIntentLocked方法，这个方法也比较长，大概是：处理了粘性广播、顺序广播，各种flag以及动态广播静态广播的接收过程，这里就可以看出广播的发送和接收是混为一体的。某个广播被发送之后，AMS会找出所有注册过的BroadcastReceiver中与这个广播匹配的接收者，然后将这个广播分发给相应的接收者处理。
+
+#### 匹配过程。
+- 上面提到broadcastIntentLocked方法里也有接收广播的代码：
+
+``` file
+// Figure out who all will receive this broadcast.
+List receivers = null;
+List<BroadcastFilter> registeredReceivers = null;
+// Need to resolve the intent to interested receivers...
+if ((intent.getFlags()&Intent.FLAG_RECEIVER_REGISTERED_ONLY)
+         == 0) {
+    receivers = collectReceiverComponents(intent, resolvedType, callingUid, users);
+}
+if (intent.getComponent() == null) {
+    if (userId == UserHandle.USER_ALL && callingUid == Process.SHELL_UID) {
+        // Query one target user at a time, excluding shell-restricted users
+        // 略
+    } else {
+        registeredReceivers = mReceiverResolver.queryIntent(intent,
+                resolvedType, false, userId);
+    }
+}
+```
+- receivers是对这个广播感兴趣的静态BroadcastReceiver列表；collectReceiverComponents 通过PackageManager获取了与这个广播匹配的静态BroadcastReceiver信息；这里也证实了我们在分析BroadcasrReceiver注册过程中的推论——静态BroadcastReceiver的注册过程的确实在PMS中进行的。
+- mReceiverResolver存储了动态注册的BroadcastReceiver的信息；还记得这个mReceiverResolver吗？我们在分析动态广播的注册过程中发现，动态注册的BroadcastReceiver的相关信息最终存储在此对象之中；在这里，通过mReceiverResolver对象匹配出了对应的BroadcastReceiver供进一步使用。
+
+### 接收过程
+- 还是上面broadcastIntentLocked方法中的接收代码：
+
+``` java
+BroadcastQueue queue = broadcastQueueForIntent(intent);
+BroadcastRecord r = new BroadcastRecord(queue, intent, callerApp,
+        callerPackage, callingPid, callingUid, resolvedType,
+        requiredPermissions, appOp, brOptions, receivers, resultTo, resultCode,
+        resultData, resultExtras, ordered, sticky, false, userId);
+
+boolean replaced = replacePending && queue.replaceOrderedBroadcastLocked(r);
+if (!replaced) {
+    queue.enqueueOrderedBroadcastLocked(r);
+    queue.scheduleBroadcastsLocked();
+}
+```
+- 首先创建一个BroadcastRecord代表此次发送的广播，然后放进一个队列。最后通过scheduleBroadcastsLocked通知队列对广播进行处理。
+- 在BroadcastQueue中通过Handle调度了对于广播处理的消息，调度过程由processNextBroadcast方法完成，而这个方法通过performReceiveLocked最终调用了IIntentReceiver的performReceive方法。
+- 这个IIntentReceiver正是在广播注册过程中由App进程提供给AMS进程的Binder对象，现在AMS通过这个Binder对象进行IPC调用通知广播接受者所在进程完成余下操作。在上文我们分析广播的注册过程中提到过，这个IItentReceiver的实现是LoadedApk.ReceiverDispatcher；我们查看这个对象的performReceive方法，源码如下：
+
+``` java
+public void performReceive(Intent intent, int resultCode, String data,
+        Bundle extras, boolean ordered, boolean sticky, int sendingUser) {
+    Args args = new Args(intent, resultCode, data, extras, ordered,
+            sticky, sendingUser);
+    if (!mActivityThread.post(args)) {
+        if (mRegistered && ordered) {
+            IActivityManager mgr = ActivityManagerNative.getDefault();
+            args.sendFinished(mgr);
+        }
+    }
+}
+```
+
+- 这个方法创建了一个Args对象，然后把它post到了mActivityThread这个Handler中；我们查看Args类的run方法:
+
+``` java
+public void run() {
+    final BroadcastReceiver receiver = mReceiver;
+    final boolean ordered = mOrdered;  
+    final IActivityManager mgr = ActivityManagerNative.getDefault();
+    final Intent intent = mCurIntent;
+    mCurIntent = null;
+
+    if (receiver == null || mForgotten) {
+        if (mRegistered && ordered) {
+            sendFinished(mgr);
+        }
+        return;
+    }
+
+    try {
+        ClassLoader cl =  mReceiver.getClass().getClassLoader(); // Important!! load class
+        intent.setExtrasClassLoader(cl);
+        setExtrasClassLoader(cl);
+        receiver.setPendingResult(this);
+        receiver.onReceive(mContext, intent); // callback
+    } catch (Exception e) {
+        if (mRegistered && ordered) {
+            sendFinished(mgr);
+        }
+        if (mInstrumentation == null ||
+                !mInstrumentation.onException(mReceiver, e)) {
+            throw new RuntimeException(
+                "Error receiving broadcast " + intent
+                + " in " + mReceiver, e);
+        }
+    }
+
+    if (receiver.getPendingResult() != null) {
+        finish();
+    }
+}
+```
+
 
 
 
