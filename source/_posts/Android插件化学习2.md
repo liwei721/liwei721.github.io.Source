@@ -355,45 +355,61 @@ public void run() {
     }
 }
 ```
+- 这里就是回调onReceive的地方，看到我们比较熟悉的方法了，哈哈。不过从这里也可以看出来，在onReceive中不能做耗时的操作，因为被post到了主线程。
+
+### receiver的hook
+- 动态注册的receiver相对比较好hook，因为不需要在AndroidManifest中配置，我们可以在ClassLoader中进行处理，将Receiver加载进来，然后想办法让receiver收到onReceive回调。
+- 主要是静态注册比较恶心，因为在AndroidManifest中配置之后，我们不能用一个假的Receiver替代，因为在receiver中还会有intentfilter，我们无法知道该给虚假的receiver添加什么intentFilter，因此我们想到一种方案是，将静态广播当做动态广播处理，唯一的影响是静态广播在程序死掉之后还能收到广播。
+- 主要的思路是通过PackageParse解析apk，获取AndroidManifest中注册的广播，然后再手动的动态注册。
+- 主要的代码如下所示：
+
+``` files
+// 获取packageParser
+           Class<?> packageParserClass = Class.forName("android.content.pm.PackageParser");
+           Method parsePackageMethod = packageParserClass.getDeclaredMethod("parsePackage", File.class, int.class);
+           Object packageParser = packageParserClass.newInstance();
+
+           // 首先调用parsePackage获取到apk对象对应的Package对象。
+           Object packageObj = parsePackageMethod.invoke(packageParser, apkFile, PackageManager.GET_RECEIVERS);
+
+           // 读取Package对象里面的receivers字段，注意这里是一个List<Activity>
+           // 接下来要做的就是根据这个List<Activity>获取到Receiver对应的ActivityInfo。
+           Field receiversField = packageObj.getClass().getDeclaredField("receivers");
+           receiversField.setAccessible(true);
+           List receivers = (List) receiversField.get(packageObj);
+
+           Class<?> activityClass = Class.forName("android.content.pm.PackageParser$Activity");
+           Field infoField = activityClass.getDeclaredField("info");
+           infoField.setAccessible(true);
 
 
+           Class<?> componentClass = Class.forName("android.content.pm.PackageParser$Component");
+           Field intentsField = componentClass.getDeclaredField("intents");
 
 
+           // 解析出receiver以及对应的 intentFilter
+           for (Object receiver: receivers){
+//                ActivityInfo info = (ActivityInfo) generateReceiverInfo.invoke(packageParser, receiver, 0, defaultUserState, userId);
+               ActivityInfo info = (ActivityInfo) infoField.get(receiver);
+               List<? extends IntentFilter> filters = (List<? extends IntentFilter>) intentsField.get(receiver);
+               sCache.put(info, filters);
+           }
 
+           ClassLoader cl = null;
+        for (ActivityInfo activityInfo : sCache.keySet()){
+            List<? extends IntentFilter> intentFilters = sCache.get(activityInfo);
 
+            // 获取插件的ClassLoader
+            if (cl == null){
+                cl = CustomClassLoader.getPluginClassLoader(apk, activityInfo.packageName);
+            }
 
+            // 解析出来的每一个静态Receiver都注册为动态的。
+            for (IntentFilter intentFilter : intentFilters){
+                BroadcastReceiver receiver = (BroadcastReceiver) cl.loadClass(activityInfo.name).newInstance();
+                context.registerReceiver(receiver, intentFilter);
+            }
+        }
+```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-++++
+- 动态广播的插件化待研究实现。
