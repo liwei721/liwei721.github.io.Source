@@ -7,6 +7,7 @@
 
 ## Android 相关
 - ~~各种开源库 rxjava、eventbus3、dagger2、Retrofit2、ButterKnife~~
+- Android插件化（）
 - 四大组件相关知识点
 - View的绘制流程及touch事件
 - handler的机制
