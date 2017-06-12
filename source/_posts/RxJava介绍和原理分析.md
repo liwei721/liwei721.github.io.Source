@@ -54,7 +54,7 @@ Observer<String> observer = new Observer<String>() {
 - 除了Observer接口之外，Rxjava还内置了一个实现了Observer的抽象类：Subscriber。Subscriber对Observer接口进行了一些扩展，但是他们的用法一样：
 
 ``` java
-Observer<String> observer = new Observer<String>() {
+Subscriber<String> subscriber = new Subscriber<String>() {
     @Override
     public void onNext(String s) {
         Log.d(tag, "Item: " + s);
