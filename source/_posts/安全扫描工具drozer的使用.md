@@ -82,7 +82,7 @@ categories: 测试工具
 - run app.broadcast.send --action android.intent.action.XXX
 
 #### 检查service问题
-- run scanner.service -a packageName
+- run app.service.info -a packageName
 
 #### 文件操作
 - run scanner.misc.writablefiles --privileged /data/data/com.sina.weibo
