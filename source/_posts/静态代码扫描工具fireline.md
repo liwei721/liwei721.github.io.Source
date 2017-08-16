@@ -65,49 +65,15 @@ public class PmdWhileTest {
       </example>
 	  </rule>
 ```
-- 然后将自己定义的规则复制到pmd_rules/java/目录下，我这里的规则是mycustom.xml。这些规则可以用pmd自带的规则改改就成了。
+- 在RedLineRule_All.xml中添加一个中文描述的规则：
 
 ``` xml
-<?xml version="1.0"?>
-
-<ruleset name="My Custom rules"
-         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 http://pmd.sourceforge.net/ruleset_2_0_0.xsd">
-    <description>
-        mine rules
-    </description>
-
-    <rule name="WhileLoopsMustUseBrancesRule"
-          since="5.7"
-          language="java"
-          message="Avoid using 'while' statements without using curly braces"
-          class="net.sourceforge.pmd.lang.rule.XPathRule"
-          externalInfoUrl="${pmd.website.baseurl}/rules/java/WhileLoopsMustUseBracesRule.html">
-        <description>
-            Avoid using 'while' statements without using curly braces
-        </description>
-        <properties>
-            <property name="xpath">
-                <value>
-                    <![CDATA[
-//WhileStatement[not(Statement/Block)]
-]]>
-                </value>
-            </property>
-        </properties>
-        <priority>1</priority>
-        <example>
-            <![CDATA[
-    public void doSomething() {
-      while (true)
-          x++;
-    }
-]]>
-        </example>
-    </rule>
-</ruleset>
+<rule id="67" name="WhileLoopsMustUseBracesRule" cname="While循环" risk="冗余" priority="1">
+	        <description><![CDATA[java代码中While循环不能不用括号。]]></description>
+	   		 </rule>
 ```
+
+- 综上，只需要修改这两个配置文件就可以了。还是比较简单方便的。
 
 ### 写java文件定义的规则
 - 这种方式需要在pmd源码中编译pmd-core（如果有改动）和pmd-java。进入它们对应的目录，执行：
